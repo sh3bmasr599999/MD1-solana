@@ -1,0 +1,85 @@
+# Build for Solscan Verify — creates a ZIP artifact containing source + idl/.so if present
+name: Build for Solscan Verify
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install system deps & Solana CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev clang curl build-essential zip unzip libudev-dev
+          # Install Solana CLI v1.18.26
+          curl -sSfL https://release.solana.com/v1.18.26/install | sh
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          solana --version || true
+
+      - name: Install Rust toolchain and Anchor CLI
+        run: |
+          # Use repo rust-toolchain.toml if present
+          if [ -f rust-toolchain.toml ]; then
+            echo "Using rust-toolchain.toml from repo"
+          else
+            rustup default 1.89.0 || true
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # Install Anchor CLI v0.30.1 (idempotent)
+          cargo install --locked --version 0.30.1 anchor-cli || true
+          anchor --version || true
+          rustc --version || true
+          cargo --version || true
+
+      - name: Build Anchor program
+        env:
+          PATH: ${{ runner.home }}/.local/share/solana/install/active_release/bin:${{ env.PATH }}:${{ runner.home }}/.cargo/bin
+        run: |
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
+          anchor build
+
+      - name: Remove any private key files (safety)
+        run: |
+          find . -type f -name "*keypair.json" -print -delete || true
+          find . -type f -name "id.json" -print -delete || true
+
+      - name: Prepare solscan zip
+        run: |
+          PROGRAM_PUBKEY="3fN2LAt47q3oSgNq4dJZt4DuAh5yJw6mb6B3dRYJGHa8"
+          ZIP_NAME="${PROGRAM_PUBKEY}-solscan.zip"
+          rm -rf solscan_package || true
+          mkdir -p solscan_package
+          # copy repo metadata and source
+          cp -n Anchor.toml Cargo.toml Cargo.lock rust-toolchain.toml solscan_package/ 2>/dev/null || true
+          [ -f README.md ] && cp README.md solscan_package/ || true
+          [ -f LICENSE ] && cp LICENSE solscan_package/ || true
+          cp -r programs solscan_package/ || true
+          # include build outputs if present (IDL and deploy .so)
+          if [ -d target/idl ]; then
+            mkdir -p solscan_package/target
+            cp -r target/idl solscan_package/target/ || true
+          fi
+          if [ -d target/deploy ]; then
+            mkdir -p solscan_package/target
+            cp -r target/deploy solscan_package/target/ || true
+          fi
+          # safety: remove any remaining keypairs
+          find solscan_package -type f -name "*keypair.json" -print -delete || true
+          zip -r "$ZIP_NAME" solscan_package || true
+          ls -lah "$ZIP_NAME" || true
+
+      - name: Upload artifact (solscan zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: solscan-zip
+          path: "*.zip"
+
+      - name: Print info (versions + next steps)
+        run: |
+          echo "Program: 3fN2LAt47q3oSgNq4dJZt4DuAh5yJw6mb6B3dRYJGHa8"
+          anchor --version || true
+          rustc --version || true
+          solana --version || true
